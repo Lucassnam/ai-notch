@@ -1,5 +1,8 @@
 # AI Notch
 
+[![CI](https://github.com/Lucassnam/ai-notch/actions/workflows/ci.yml/badge.svg)](https://github.com/Lucassnam/ai-notch/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **See what your AI coding actually uses, right beside the MacBook notch.**
 
 A flat plan has no meter. You pay the same whether you sent ten requests or ten
