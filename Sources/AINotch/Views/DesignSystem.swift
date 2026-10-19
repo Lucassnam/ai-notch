@@ -39,7 +39,11 @@ enum NotchType {
     /// Both slots share one face, one size and one weight. They previously
     /// differed by weight (medium vs semibold), which at 13pt reads as two
     /// different sizes sitting either side of the notch.
-    static let compact = Font.system(size: NotchMetrics.compactFontSize, weight: .medium)
+    ///
+    /// Regular, because that is what the menu titles beside it use: measured
+    /// on a 2x capture, "Help" and these figures share a 19px cap height but
+    /// medium drew 4px stems against the menu's 3px, which read as bigger.
+    static let compact = Font.system(size: NotchMetrics.compactFontSize, weight: .regular)
     static let compactLeading = compact
     static let compactTrailing = compact
     static let tab = Font.system(size: 13, weight: .medium)
@@ -350,6 +354,8 @@ struct RangeSelector<Value: Hashable & Identifiable>: View {
     @Binding var selection: Value
     var height: CGFloat = 26
     var font: Font = NotchType.label
+    /// Draws an SF Symbol instead of the title, which stays as the help text.
+    var symbol: ((Value) -> String)? = nil
     @Namespace private var selectionSpace
 
     private let inset: CGFloat = 2
@@ -361,7 +367,14 @@ struct RangeSelector<Value: Hashable & Identifiable>: View {
                 Button {
                     withAnimation(.snappy(duration: 0.24)) { selection = option }
                 } label: {
-                    Text(title(option))
+                    Group {
+                        if let symbol {
+                            Image(systemName: symbol(option))
+                                .accessibilityLabel(title(option))
+                        } else {
+                            Text(title(option))
+                        }
+                    }
                         .font(font)
                         .fontWeight(isSelected ? .semibold : .medium)
                         .foregroundStyle(isSelected ? Color.white : NotchDesign.secondary)
@@ -381,6 +394,7 @@ struct RangeSelector<Value: Hashable & Identifiable>: View {
                         .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                .help(symbol == nil ? "" : title(option))
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }

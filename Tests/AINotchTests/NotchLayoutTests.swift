@@ -9,13 +9,22 @@ final class NotchLayoutTests: XCTestCase {
 
     func testCollapsedNotchReservesExactlyOneGutterPerSide() {
         let hardwareNotchWidth: CGFloat = 185
-        let reserved = NotchMetrics.collapsedWidth(notchWidth: hardwareNotchWidth)
+        let reserved = NotchMetrics.collapsedWidth(notchWidth: hardwareNotchWidth, notchHeight: 32)
             - hardwareNotchWidth
-        XCTAssertEqual(reserved, NotchMetrics.compactGutter * 2, accuracy: 0.001)
-        // Wide enough for a value on each side, narrow enough not to bury the
-        // menu bar the way the old flat 200pt reservation did.
-        XCTAssertGreaterThanOrEqual(reserved, 2 * NotchMetrics.compactSlotWidth)
+        XCTAssertEqual(reserved, NotchMetrics.compactGutter(notchHeight: 32) * 2, accuracy: 0.001)
         XCTAssertLessThan(reserved, 200)
+    }
+
+    /// Requested 2026-10-16: like Boring Notch, each side is at most a square.
+    /// The painted part beside the notch is exactly notch-height wide.
+    func testEachSideOfTheCollapsedBarIsASquare() {
+        for (notchWidth, notchHeight) in [(CGFloat(185), CGFloat(32)), (220, 38)] {
+            let width = NotchMetrics.collapsedWidth(notchWidth: notchWidth, notchHeight: notchHeight)
+            let painted = (width - notchWidth) / 2 - NotchMetrics.compactShoulderRadius
+            XCTAssertEqual(painted, notchHeight, accuracy: 0.001)
+        }
+        // At the user's More Space notch that is 318pt, down from 354.
+        XCTAssertEqual(NotchMetrics.collapsedWidth(notchWidth: 220, notchHeight: 38), 318, accuracy: 0.001)
     }
 
     func testCompactTextMatchesMenuBarScaleOnBothSides() {
@@ -35,8 +44,9 @@ final class NotchLayoutTests: XCTestCase {
     /// was a measured 6pt bias on each side.
     func testCompactSlotsAreCentredInThePaintedGutterNotTheFrame() {
         let notchWidth: CGFloat = 185
-        let width = NotchMetrics.collapsedWidth(notchWidth: notchWidth)
-        let slots = NotchMetrics.compactSlots(width: width, notchWidth: notchWidth)
+        let notchHeight: CGFloat = 32
+        let width = NotchMetrics.collapsedWidth(notchWidth: notchWidth, notchHeight: notchHeight)
+        let slots = NotchMetrics.compactSlots(width: width, notchWidth: notchWidth, notchHeight: notchHeight)
 
         let paintedLeading = NotchMetrics.compactShoulderRadius
         let paintedTrailing = width - NotchMetrics.compactShoulderRadius
@@ -59,8 +69,9 @@ final class NotchLayoutTests: XCTestCase {
 
     func testCompactSlotsAreMirrorImagesOfEachOther() {
         let notchWidth: CGFloat = 185
-        let width = NotchMetrics.collapsedWidth(notchWidth: notchWidth)
-        let slots = NotchMetrics.compactSlots(width: width, notchWidth: notchWidth)
+        let notchHeight: CGFloat = 32
+        let width = NotchMetrics.collapsedWidth(notchWidth: notchWidth, notchHeight: notchHeight)
+        let slots = NotchMetrics.compactSlots(width: width, notchWidth: notchWidth, notchHeight: notchHeight)
 
         XCTAssertEqual(slots.leadingCenter, width - slots.trailingCenter, accuracy: 0.001)
         XCTAssertGreaterThan(slots.width, 0)
@@ -71,11 +82,13 @@ final class NotchLayoutTests: XCTestCase {
     /// available and nothing guarantees they are symmetric.
     func testCompactSlotsFollowAnOffCentreNotch() {
         let notchWidth: CGFloat = 185
-        let width = NotchMetrics.collapsedWidth(notchWidth: notchWidth)
+        let notchHeight: CGFloat = 32
+        let width = NotchMetrics.collapsedWidth(notchWidth: notchWidth, notchHeight: notchHeight)
         let offset: CGFloat = 12
         let slots = NotchMetrics.compactSlots(
             width: width,
             notchWidth: notchWidth,
+            notchHeight: notchHeight,
             notchCenterOffset: offset
         )
 
@@ -104,8 +117,8 @@ final class NotchLayoutTests: XCTestCase {
     }
 
     func testCompactSlotsDegradeSafelyWithoutAHardwareNotch() {
-        let width = NotchMetrics.collapsedWidth(notchWidth: 0)
-        let slots = NotchMetrics.compactSlots(width: width, notchWidth: 0)
+        let width = NotchMetrics.collapsedWidth(notchWidth: 0, notchHeight: 32)
+        let slots = NotchMetrics.compactSlots(width: width, notchWidth: 0, notchHeight: 32)
 
         XCTAssertEqual(width, NotchMetrics.collapsedFallbackWidth)
         XCTAssertEqual(slots.leadingCenter, width - slots.trailingCenter, accuracy: 0.001)
@@ -234,12 +247,13 @@ final class NotchLayoutTests: XCTestCase {
     /// the layout was never measured against.
     func testCompactSlotsClearTheNotchAtTheMoreSpaceGeometry() {
         let notchWidth: CGFloat = 220
-        let width = NotchMetrics.collapsedWidth(notchWidth: notchWidth)
-        let slots = NotchMetrics.compactSlots(width: width, notchWidth: notchWidth)
+        let notchHeight: CGFloat = 38
+        let width = NotchMetrics.collapsedWidth(notchWidth: notchWidth, notchHeight: notchHeight)
+        let slots = NotchMetrics.compactSlots(width: width, notchWidth: notchWidth, notchHeight: notchHeight)
         let notchLeading = (width - notchWidth) / 2
         let notchTrailing = (width + notchWidth) / 2
 
-        XCTAssertEqual(slots.width, NotchMetrics.compactSlotWidth, accuracy: 0.001)
+        XCTAssertEqual(slots.width, notchHeight - NotchMetrics.compactSlotInset * 2, accuracy: 0.001)
         XCTAssertLessThanOrEqual(slots.leadingCenter + slots.width / 2, notchLeading)
         XCTAssertGreaterThanOrEqual(slots.trailingCenter - slots.width / 2, notchTrailing)
         XCTAssertGreaterThanOrEqual(

@@ -45,14 +45,10 @@ enum NotchMetrics {
     /// load-bearing: it makes "centred in the padded slot" and "centred in the
     /// visible gutter" the same point, so the two ways of reading the layout
     /// cannot disagree.
-    static let compactSlotInset: CGFloat = 6
-    /// Room for the widest value a slot routinely shows.
     ///
-    /// Tuned down from 58 with the inset: at 89pt per side the values sat in
-    /// a field of empty bar. This is the smallest slot that still renders
-    /// `$74.87` and `999.9M` at full 13pt, which is the floor the type scale
-    /// sets — going narrower buys width by dropping text under 11pt.
-    static let compactSlotWidth: CGFloat = 44
+    /// 2pt, down from 6, because the gutter is now a square: at a 38pt notch
+    /// that leaves a 34pt slot, which holds `$132` or `22M` at full 13pt.
+    static let compactSlotInset: CGFloat = 2
     static let compactFontSize: CGFloat = 13
     static let leadingCompactFontSize: CGFloat = compactFontSize
     static let trailingCompactFontSize: CGFloat = compactFontSize
@@ -61,10 +57,17 @@ enum NotchMetrics {
     static let horizontalPadding: CGFloat = outerPadding
     static let notchClearance: CGFloat = MacSpacing.item
 
-    /// The painted width beside the notch: the unpainted shoulder curve, then
-    /// an inset, the value, and an equal inset before the notch begins.
-    static let compactGutter: CGFloat =
-        compactShoulderRadius + compactSlotInset * 2 + compactSlotWidth
+    /// The painted part of each side is a square, notch-height wide, the way
+    /// Boring Notch sizes its closed state. The old fixed 44pt slot made each
+    /// side a 67 x 38 rectangle and the bar 354pt wide at a 220pt notch.
+    static func compactSide(notchHeight: CGFloat) -> CGFloat {
+        max(0, notchHeight)
+    }
+
+    /// The width beside the notch: the unpainted shoulder curve, then the square.
+    static func compactGutter(notchHeight: CGFloat) -> CGFloat {
+        compactShoulderRadius + compactSide(notchHeight: notchHeight)
+    }
 
     static func topStripHeight(notchHeight: CGFloat) -> CGFloat {
         max(notchHeight, 40)
@@ -87,9 +90,9 @@ enum NotchMetrics {
     /// Exactly the notch plus one gutter per side. The previous `notchWidth + 200`
     /// reserved 100pt per side, which buried the Apple menu and the leftmost
     /// status items under an opaque block for no layout benefit.
-    static func collapsedWidth(notchWidth: CGFloat) -> CGFloat {
+    static func collapsedWidth(notchWidth: CGFloat, notchHeight: CGFloat) -> CGFloat {
         guard notchWidth > 0 else { return collapsedFallbackWidth }
-        return notchWidth + compactGutter * 2
+        return notchWidth + compactGutter(notchHeight: notchHeight) * 2
     }
 
     /// Where the two compact values sit, and how wide they may be.
@@ -108,16 +111,17 @@ enum NotchMetrics {
     static func compactSlots(
         width: CGFloat,
         notchWidth: CGFloat,
+        notchHeight: CGFloat,
         notchCenterOffset: CGFloat = 0
     ) -> CompactSlots {
         let paintedLeading = compactShoulderRadius
         let paintedTrailing = width - compactShoulderRadius
         let midX = width / 2 + notchCenterOffset
         // With no hardware notch there is nothing to route around, so the two
-        // values keep the same gutter width they would have beside one.
+        // values keep the same square they would have beside one.
         let gap = notchWidth > 0
             ? notchWidth
-            : max(0, width - compactGutter * 2)
+            : max(0, width - compactGutter(notchHeight: notchHeight) * 2)
 
         let notchLeading = min(max(paintedLeading, midX - gap / 2), paintedTrailing)
         let notchTrailing = max(min(paintedTrailing, midX + gap / 2), paintedLeading)
@@ -218,13 +222,17 @@ private struct CollapsedNotchView: View {
     @ObservedObject var viewModel: UsageViewModel
 
     private var width: CGFloat {
-        NotchMetrics.collapsedWidth(notchWidth: viewModel.notchWidth)
+        NotchMetrics.collapsedWidth(
+            notchWidth: viewModel.notchWidth,
+            notchHeight: viewModel.notchHeight
+        )
     }
 
     private var slots: NotchMetrics.CompactSlots {
         NotchMetrics.compactSlots(
             width: width,
             notchWidth: viewModel.notchWidth,
+            notchHeight: viewModel.notchHeight,
             notchCenterOffset: viewModel.notchCenterOffset
         )
     }
@@ -261,6 +269,9 @@ private struct CollapsedNotchView: View {
     }
 }
 
+/// The short figure alone, set like a menu-bar title. It used to carry a 2pt
+/// share bar underneath, which pushed the figure 2.5pt above the menu titles'
+/// line and read as decoration rather than information at that size.
 private struct CompactMetricSlot: View {
     let widget: MetricWidget?
     @ObservedObject var viewModel: UsageViewModel
@@ -268,9 +279,9 @@ private struct CompactMetricSlot: View {
     var body: some View {
         if let widget {
             let metric = viewModel.presentation(for: widget)
-            // Until the first scan lands every total is zero, and "$0.00" is a
+            // Until the first scan lands every total is zero, and "$0" is a
             // claim about spending rather than a sign that nothing has loaded.
-            Text(viewModel.hasLoaded ? metric.compactValue : "–")
+            Text(viewModel.hasLoaded ? metric.squareValue : "–")
                 .font(NotchType.compact)
                 .foregroundStyle(
                     viewModel.hasLoaded ? metric.tint.opacity(0.96) : NotchDesign.tertiary
@@ -278,13 +289,13 @@ private struct CompactMetricSlot: View {
                 .monospacedDigit()
                 .contentTransition(.numericText())
                 .lineLimit(1)
-                // One scale factor for both slots. Two independent ones let a
-                // long currency value shrink on one side while the other stayed
-                // full size, which is what read as "uneven".
-                .minimumScaleFactor(0.85)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(widget.title), \(metric.value)")
+                // Only `$1.2K`-style values need it, and only at the 32pt
+                // default-scaling notch. One factor for both slots: two
+                // independent ones read as two sizes.
+                .minimumScaleFactor(0.8)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(widget.title), \(metric.value)")
         } else {
             Color.clear
         }
@@ -516,7 +527,8 @@ private struct MetricWidgetCard: View {
 
 private struct MetricPresentation {
     let value: String
-    let compactValue: String
+    /// The figure beside the notch, at most about four glyphs.
+    let squareValue: String
     /// What the figure is made of: tokens under a spend, spend under a token
     /// count, the reset time under a limit. A card that is only a number makes
     /// the reader guess which of four near-identical numbers it is.
@@ -533,14 +545,14 @@ private struct MetricPresentation {
 
     init(
         value: String,
-        compactValue: String? = nil,
+        squareValue: String? = nil,
         detail: String? = nil,
         tint: Color,
         cardTint: Color = .white,
         shares: [ShareBar.Share] = []
     ) {
         self.value = value
-        self.compactValue = compactValue ?? value
+        self.squareValue = squareValue ?? value
         self.detail = detail
         self.tint = tint
         self.cardTint = cardTint
@@ -641,7 +653,7 @@ private extension UsageViewModel {
     ) -> MetricPresentation {
         MetricPresentation(
             value: AIFormat.currency(slice.estimatedCost),
-            compactValue: AIFormat.currency(slice.estimatedCost, compact: true),
+            squareValue: AIFormat.squareCurrency(slice.estimatedCost),
             detail: detail,
             tint: provider?.tint ?? .white,
             shares: shares(of: window, by: .cost, only: provider)
@@ -655,6 +667,7 @@ private extension UsageViewModel {
     ) -> MetricPresentation {
         MetricPresentation(
             value: AIFormat.tokens(slice.tokens.total),
+            squareValue: AIFormat.squareTokens(slice.tokens.total),
             detail: "\(AIFormat.currency(slice.estimatedCost)) at API rates",
             tint: provider?.tint ?? .white,
             shares: shares(of: window, by: .tokens, only: provider)
@@ -690,7 +703,7 @@ private extension UsageViewModel {
         let isLow = limit.remainingPercent <= 10
         return MetricPresentation(
             value: limit.remainingLabel,
-            compactValue: limit.compactRemainingLabel,
+            squareValue: limit.compactRemainingLabel,
             detail: AIFormat.reset(limit.resetsAt),
             tint: isLow ? .orange : provider.tint,
             cardTint: isLow ? .orange : .white,

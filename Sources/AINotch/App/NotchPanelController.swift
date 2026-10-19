@@ -60,7 +60,10 @@ final class NotchPanelController: NSObject {
 
     private var collapsedSize: NSSize {
         NSSize(
-            width: NotchMetrics.collapsedWidth(notchWidth: resolvedNotchWidth),
+            width: NotchMetrics.collapsedWidth(
+                notchWidth: resolvedNotchWidth,
+                notchHeight: resolvedNotchHeight
+            ),
             height: resolvedNotchHeight
         )
     }
@@ -99,7 +102,10 @@ final class NotchPanelController: NSObject {
             contentRect: NSRect(
                 origin: .zero,
                 size: NSSize(
-                    width: NotchMetrics.collapsedWidth(notchWidth: 0),
+                    width: NotchMetrics.collapsedWidth(
+                        notchWidth: 0,
+                        notchHeight: NotchMetrics.collapsedFallbackHeight
+                    ),
                     height: NotchMetrics.collapsedFallbackHeight
                 )
             ),

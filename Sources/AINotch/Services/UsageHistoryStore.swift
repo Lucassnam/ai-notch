@@ -66,17 +66,35 @@ struct UsageHistoryStore {
         )
     }
 
+    /// The history is the only copy of anything Claude Code has since cleaned
+    /// up, so a file this build cannot read is moved aside, never overwritten.
+    ///
+    /// `hasLoaded` used to be set before the decode. One failed decode threw,
+    /// the next scan saw `hasLoaded` and an empty envelope, and `persist()`
+    /// replaced months of history with the last 30 days.
     private mutating func loadIfNeeded() throws {
         guard !hasLoaded else { return }
-        hasLoaded = true
-        guard fileManager.fileExists(atPath: historyURL.path) else { return }
+        guard fileManager.fileExists(atPath: historyURL.path) else {
+            hasLoaded = true
+            return
+        }
 
         let data = try Data(contentsOf: historyURL)
-        let decoded = try JSONDecoder().decode(Envelope.self, from: data)
-        guard decoded.version == envelope.version else {
-            throw CocoaError(.fileReadCorruptFile)
+        if let decoded = try? JSONDecoder().decode(Envelope.self, from: data),
+           decoded.version == envelope.version {
+            envelope = decoded
+        } else {
+            try fileManager.moveItem(at: historyURL, to: Self.asideURL(for: historyURL))
         }
-        envelope = decoded
+        hasLoaded = true
+    }
+
+    /// `usage-history.unreadable-1789000000.json`, beside the original.
+    static func asideURL(for url: URL, at date: Date = Date()) -> URL {
+        let stamp = Int(date.timeIntervalSince1970)
+        return url.deletingLastPathComponent().appendingPathComponent(
+            "\(url.deletingPathExtension().lastPathComponent).unreadable-\(stamp).\(url.pathExtension)"
+        )
     }
 
     private func persist() throws {

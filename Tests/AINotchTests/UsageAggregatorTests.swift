@@ -147,4 +147,23 @@ final class UsageAggregatorTests: XCTestCase {
         XCTAssertEqual(codex.currentLimit?.windowMinutes, 10_080)
         XCTAssertEqual(codex.currentLimit?.remainingPercent, 96)
     }
+
+    func testLimitPastItsResetReadsAsFull() throws {
+        let now = Date(timeIntervalSince1970: 1_790_000_000)
+        let stale = RateLimitWindow(
+            id: "five-hour",
+            provider: .codex,
+            windowMinutes: 300,
+            usedPercent: 88,
+            resetsAt: now.addingTimeInterval(-60),
+            observedAt: now.addingTimeInterval(-4 * 60 * 60),
+            source: "test"
+        )
+        let raw = RawTelemetry(events: [], limits: [stale], sourceFiles: [:])
+        let snapshot = UsageAggregator().snapshot(from: raw, now: now)
+        let codex = try XCTUnwrap(snapshot.providers.first { $0.provider == .codex })
+
+        XCTAssertEqual(codex.currentLimit?.remainingPercent, 100)
+        XCTAssertEqual(AIFormat.reset(stale.resetsAt, now: now), "Reset, unused since")
+    }
 }

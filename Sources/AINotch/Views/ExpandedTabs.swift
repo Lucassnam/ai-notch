@@ -59,6 +59,120 @@ enum UsageGraphMetric: String, CaseIterable, Identifiable {
     }
 }
 
+/// Bars stack each provider; the heatmap trades that split for a whole
+/// calendar at a glance, the way GitHub's contribution graph does.
+enum UsageGraphStyle: String, CaseIterable, Identifiable {
+    case bars
+    case heatmap
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .bars: "Bars"
+        case .heatmap: "Heatmap"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .bars: "chart.bar.fill"
+        case .heatmap: "square.grid.3x3.fill"
+        }
+    }
+}
+
+struct UsageHeatmapCell: Identifiable, Equatable {
+    let day: Date
+    let value: Double
+    /// 0 for an idle day, then 1-4 by quartile of the active days shown.
+    let level: Int
+
+    var id: Date { day }
+}
+
+/// Columns of cells, oldest first. A column is one week, top to bottom in the
+/// calendar's own weekday order, or a single day when `rows` is 1. `nil`
+/// marks a slot outside the range (before the first day, after today).
+struct UsageHeatmapGrid: Equatable {
+    let rows: Int
+    let columns: [[UsageHeatmapCell?]]
+
+    var cells: [UsageHeatmapCell] { columns.flatMap { $0.compactMap { $0 } } }
+}
+
+enum UsageHeatmap {
+    static let levels = 4
+
+    static func grid(
+        from dailyUsage: [DailyUsage],
+        metric: UsageGraphMetric,
+        range: HistoryRange,
+        endingOn endDate: Date = Date(),
+        calendar: Calendar = .autoupdatingCurrent,
+        maxColumns: Int = 53
+    ) -> UsageHeatmapGrid {
+        let end = calendar.startOfDay(for: endDate)
+        let totals = dailyUsage.reduce(into: [Date: Double]()) { result, item in
+            let amount = metric == .money ? item.estimatedCost : Double(item.tokens.total)
+            result[calendar.startOfDay(for: item.day), default: 0] += amount
+        }
+
+        let start: Date
+        switch range {
+        case .week:
+            start = calendar.date(byAdding: .day, value: -6, to: end) ?? end
+        case .thirtyDays:
+            start = calendar.date(byAdding: .day, value: -29, to: end) ?? end
+        case .all:
+            start = min(totals.keys.filter { $0 <= end }.min() ?? end, end)
+        }
+
+        let thresholds = quartiles(
+            totals.filter { $0.key >= start && $0.key <= end && $0.value > 0 }.map(\.value)
+        )
+        func cell(_ day: Date) -> UsageHeatmapCell? {
+            guard day >= start, day <= end else { return nil }
+            let value = totals[day] ?? 0
+            return UsageHeatmapCell(day: day, value: value, level: level(value, thresholds))
+        }
+
+        // Seven days read best as one strip of large cells.
+        if range == .week {
+            let days = (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: start) }
+            return UsageHeatmapGrid(rows: 1, columns: days.map { [cell($0)] })
+        }
+
+        let firstWeek = calendar.dateInterval(of: .weekOfYear, for: start)?.start ?? start
+        var columns: [[UsageHeatmapCell?]] = []
+        var weekStart = firstWeek
+        while weekStart <= end {
+            columns.append((0..<7).map { offset in
+                calendar.date(byAdding: .day, value: offset, to: weekStart).flatMap(cell)
+            })
+            guard let next = calendar.date(byAdding: .weekOfYear, value: 1, to: weekStart) else { break }
+            weekStart = next
+        }
+        return UsageHeatmapGrid(rows: 7, columns: Array(columns.suffix(maxColumns)))
+    }
+
+    /// GitHub-style buckets: a day's level is the quartile it falls in among
+    /// the active days shown, so one huge day cannot flatten the rest to the
+    /// faintest shade the way a linear scale would.
+    static func quartiles(_ values: [Double]) -> [Double] {
+        let sorted = values.sorted()
+        guard !sorted.isEmpty else { return [] }
+        return (1..<levels).map { quarter in
+            sorted[min(sorted.count - 1, sorted.count * quarter / levels)]
+        }
+    }
+
+    static func level(_ value: Double, _ thresholds: [Double]) -> Int {
+        guard value > 0 else { return 0 }
+        return 1 + thresholds.filter { value >= $0 }.count
+    }
+}
+
 struct UsageGraphPoint: Identifiable, Equatable {
     let day: Date
     let provider: ProviderID
@@ -210,6 +324,9 @@ struct UsageGraphPage: View {
     @State private var metric = UsageGraphMetric(
         rawValue: ProcessInfo.processInfo.environment["AINOTCH_PREVIEW_METRIC"] ?? "money"
     ) ?? .money
+    @State private var style = UsageGraphStyle(
+        rawValue: ProcessInfo.processInfo.environment["AINOTCH_PREVIEW_GRAPH"] ?? "bars"
+    ) ?? .bars
 
     private var points: [UsageGraphPoint] {
         UsageGraphSeries.spend(from: viewModel.snapshot.daily, range: range)
@@ -360,6 +477,18 @@ struct UsageGraphPage: View {
                 .accessibilityElement(children: .combine)
             }
             Spacer(minLength: 0)
+            // On the legend's row, which had the room: a row of its own would
+            // take its height from the chart.
+            RangeSelector(
+                options: UsageGraphStyle.allCases,
+                title: \.title,
+                selection: $style,
+                height: 22,
+                font: .system(size: 10, weight: .semibold),
+                symbol: \.symbol
+            )
+            .frame(width: 64)
+            .accessibilityLabel("Graph style")
         }
     }
 
@@ -406,51 +535,70 @@ struct UsageGraphPage: View {
             legend
                 .padding(.horizontal, MacSpacing.compact)
 
-            Chart {
-                ForEach(points) { point in
-                    BarMark(
-                        x: .value("Period", point.day, unit: xUnit),
-                        y: .value(metric.title, point.value(for: metric))
-                    )
-                    .foregroundStyle(by: .value("Provider", point.provider.displayName))
-                    // 2pt, not 4. Swift Charts rounds every corner of a mark,
-                    // so a larger radius lifts stacked segments off the baseline
-                    // and off each other.
-                    .cornerRadius(2)
-                }
-            }
-            .chartForegroundStyleScale([
-                ProviderID.claude.displayName: ProviderID.claude.tint,
-                ProviderID.codex.displayName: ProviderID.codex.tint
-            ])
-            .chartLegend(.hidden)
-            .chartYScale(domain: 0...upperBound)
-            .chartYAxis {
-                // One reference line at the tallest bucket. The axis was fully
-                // hidden, which left every bar height unreadable.
-                AxisMarks(position: .trailing, values: [peak]) { _ in
-                    AxisGridLine().foregroundStyle(NotchDesign.divider)
-                    AxisValueLabel {
-                        Text(formatted(peak))
-                            .font(NotchType.label)
-                            .foregroundStyle(NotchDesign.tertiary)
+            Group {
+                switch style {
+                case .bars:
+                    Chart {
+                        ForEach(points) { point in
+                            BarMark(
+                                x: .value("Period", point.day, unit: xUnit),
+                                y: .value(metric.title, point.value(for: metric))
+                            )
+                            .foregroundStyle(by: .value("Provider", point.provider.displayName))
+                            // 2pt, not 4. Swift Charts rounds every corner of a mark,
+                            // so a larger radius lifts stacked segments off the baseline
+                            // and off each other.
+                            .cornerRadius(2)
+                        }
                     }
+                    .chartForegroundStyleScale([
+                        ProviderID.claude.displayName: ProviderID.claude.tint,
+                        ProviderID.codex.displayName: ProviderID.codex.tint
+                    ])
+                    .chartLegend(.hidden)
+                    .chartYScale(domain: 0...upperBound)
+                    .chartYAxis {
+                        // One reference line at the tallest bucket. The axis was fully
+                        // hidden, which left every bar height unreadable.
+                        AxisMarks(position: .trailing, values: [peak]) { _ in
+                            AxisGridLine().foregroundStyle(NotchDesign.divider)
+                            AxisValueLabel {
+                                Text(formatted(peak))
+                                    .font(NotchType.label)
+                                    .foregroundStyle(NotchDesign.tertiary)
+                            }
+                        }
+                    }
+                    .chartXAxis {
+                        if range == .thirtyDays {
+                            AxisMarks(values: thirtyDayMarks) { value in xLabel(value, centered: false) }
+                        } else {
+                            AxisMarks(values: xAxisValues) { value in xLabel(value, centered: true) }
+                        }
+                    }
+                    .frame(maxHeight: .infinity)
+                    .padding(NotchDesign.cardPadding)
+                    .metalCard()
+                    .accessibilityLabel("\(caption) \(metric.title.lowercased()) graph")
+                    .accessibilityValue(formattedTotal)
+                    .animation(.easeInOut(duration: 0.18), value: range)
+                    .animation(.easeInOut(duration: 0.18), value: metric)
+                case .heatmap:
+                    UsageHeatmapView(
+                        grid: UsageHeatmap.grid(
+                            from: viewModel.snapshot.daily,
+                            metric: metric,
+                            range: range
+                        ),
+                        format: { formatted($0, compact: false) }
+                    )
+                    .frame(maxHeight: .infinity)
+                    .padding(NotchDesign.cardPadding)
+                    .metalCard()
+                    .accessibilityLabel("\(caption) \(metric.title.lowercased()) heatmap")
+                    .accessibilityValue(formattedTotal)
                 }
             }
-            .chartXAxis {
-                if range == .thirtyDays {
-                    AxisMarks(values: thirtyDayMarks) { value in xLabel(value, centered: false) }
-                } else {
-                    AxisMarks(values: xAxisValues) { value in xLabel(value, centered: true) }
-                }
-            }
-            .frame(maxHeight: .infinity)
-            .padding(NotchDesign.cardPadding)
-            .metalCard()
-            .accessibilityLabel("\(caption) \(metric.title.lowercased()) graph")
-            .accessibilityValue(formattedTotal)
-            .animation(.easeInOut(duration: 0.18), value: range)
-            .animation(.easeInOut(duration: 0.18), value: metric)
 
             if let coverageNote {
                 Text(coverageNote)
@@ -471,7 +619,186 @@ struct UsageGraphPage: View {
                let requestedMetric = UsageGraphMetric(rawValue: rawMetric) {
                 metric = requestedMetric
             }
+            if let rawStyle = ProcessInfo.processInfo.environment["AINOTCH_PREVIEW_GRAPH"],
+               let requestedStyle = UsageGraphStyle(rawValue: rawStyle) {
+                style = requestedStyle
+            }
         }
+    }
+}
+
+/// GitHub's contribution graph, in Claude orange: darker is less, brighter
+/// is more, a ring marks today. Pointing at a day names it in the footer, since
+/// the panel is never key and so never shows tooltips.
+struct UsageHeatmapView: View {
+    let grid: UsageHeatmapGrid
+    let format: (Double) -> String
+    @State private var hovered: UsageHeatmapCell?
+
+    private let gap: CGFloat = 3
+    private let labelWidth: CGFloat = 14
+    private let labelHeight: CGFloat = 14
+    private let maxCell: CGFloat = 40
+
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("EEEMMMd")
+        return formatter
+    }()
+
+    static func color(level: Int) -> Color {
+        guard level > 0 else { return NotchDesign.control }
+        let opacity = [0.30, 0.52, 0.76, 1.0][min(level, UsageHeatmap.levels) - 1]
+        return ProviderID.claude.tint.opacity(opacity)
+    }
+
+    private var isCalendar: Bool { grid.rows == 7 }
+
+    private var today: Date { Calendar.autoupdatingCurrent.startOfDay(for: Date()) }
+
+    var body: some View {
+        VStack(spacing: MacSpacing.related) {
+            GeometryReader { proxy in
+                let size = cellSize(in: proxy.size)
+                let gridWidth = CGFloat(grid.columns.count) * (size + gap) - gap
+                HStack(alignment: .top, spacing: 0) {
+                    if isCalendar { weekdayLabels(size: size) }
+                    VStack(alignment: .leading, spacing: 4) {
+                        if isCalendar { monthLabels(size: size, width: gridWidth) }
+                        HStack(spacing: gap) {
+                            ForEach(grid.columns.indices, id: \.self) { index in
+                                VStack(spacing: gap) {
+                                    ForEach(0..<grid.rows, id: \.self) { row in
+                                        square(grid.columns[index][row], size: size)
+                                    }
+                                }
+                            }
+                        }
+                        if !isCalendar { dayLetters(size: size) }
+                    }
+                }
+                .frame(width: proxy.size.width, height: proxy.size.height)
+            }
+            footer
+        }
+    }
+
+    /// Square cells as large as both directions allow, so seven days fill the
+    /// card and a whole season still fits on one row.
+    private func cellSize(in available: CGSize) -> CGFloat {
+        let columns = CGFloat(max(1, grid.columns.count))
+        let rows = CGFloat(grid.rows)
+        let width = available.width - (isCalendar ? labelWidth : 0)
+        let height = available.height - labelHeight - 4
+        let byWidth = (width - gap * (columns - 1)) / columns
+        let byHeight = (height - gap * (rows - 1)) / rows
+        return max(4, min(maxCell, byWidth, byHeight))
+    }
+
+    @ViewBuilder
+    private func square(_ cell: UsageHeatmapCell?, size: CGFloat) -> some View {
+        let shape = RoundedRectangle(cornerRadius: min(4, size / 4), style: .continuous)
+        if let cell {
+            shape
+                .fill(Self.color(level: cell.level))
+                .overlay {
+                    if cell.day == today {
+                        shape.strokeBorder(Color.white.opacity(0.7), lineWidth: 1)
+                    } else if cell == hovered {
+                        shape.strokeBorder(Color.white.opacity(0.45), lineWidth: 1)
+                    }
+                }
+                .frame(width: size, height: size)
+                .contentShape(Rectangle())
+                .onHover { inside in
+                    if inside { hovered = cell } else if hovered == cell { hovered = nil }
+                }
+                .accessibilityElement()
+                .accessibilityLabel(Self.dayFormatter.string(from: cell.day))
+                .accessibilityValue(format(cell.value))
+        } else {
+            Color.clear.frame(width: size, height: size)
+        }
+    }
+
+    /// Mon, Wed and Fri, as GitHub labels them; every row is too dense.
+    private func weekdayLabels(size: CGFloat) -> some View {
+        let calendar = Calendar.autoupdatingCurrent
+        let symbols = calendar.veryShortWeekdaySymbols
+        return VStack(alignment: .leading, spacing: gap) {
+            ForEach(0..<7, id: \.self) { row in
+                let weekday = (calendar.firstWeekday - 1 + row) % 7
+                Text([1, 3, 5].contains(weekday) ? symbols[weekday] : "")
+                    .frame(width: labelWidth, height: size, alignment: .leading)
+            }
+        }
+        .font(.system(size: 9, weight: .medium))
+        .foregroundStyle(NotchDesign.tertiary)
+        .padding(.top, labelHeight + 4)
+    }
+
+    /// A month's name over the first week that starts inside it.
+    private func monthLabels(size: CGFloat, width: CGFloat) -> some View {
+        let calendar = Calendar.autoupdatingCurrent
+        return ZStack(alignment: .topLeading) {
+            ForEach(grid.columns.indices, id: \.self) { index in
+                if let first = grid.columns[index].compactMap({ $0 }).first,
+                   index == 0 || calendar.component(.day, from: first.day) <= 7 {
+                    Text(first.day, format: .dateTime.month(.abbreviated))
+                        .fixedSize()
+                        .offset(x: CGFloat(index) * (size + gap))
+                }
+            }
+        }
+        .font(.system(size: 10, weight: .medium))
+        .foregroundStyle(NotchDesign.tertiary)
+        .frame(width: width, height: labelHeight, alignment: .topLeading)
+        .clipped()
+    }
+
+    private func dayLetters(size: CGFloat) -> some View {
+        HStack(spacing: gap) {
+            ForEach(grid.columns.indices, id: \.self) { index in
+                Group {
+                    if let cell = grid.columns[index].first ?? nil {
+                        Text(cell.day, format: .dateTime.weekday(.abbreviated))
+                    } else {
+                        Text("")
+                    }
+                }
+                .frame(width: size, height: labelHeight)
+            }
+        }
+        .font(.system(size: 10, weight: .medium))
+        .foregroundStyle(NotchDesign.tertiary)
+    }
+
+    private var footer: some View {
+        HStack(spacing: 4) {
+            Group {
+                if let hovered {
+                    Text("\(Self.dayFormatter.string(from: hovered.day))  ")
+                        .foregroundStyle(NotchDesign.secondary)
+                    + Text(format(hovered.value)).foregroundStyle(Color.white)
+                } else {
+                    let active = grid.cells.filter { $0.value > 0 }.count
+                    Text(active == 1 ? "1 active day" : "\(active) active days")
+                        .foregroundStyle(NotchDesign.tertiary)
+                }
+            }
+            .monospacedDigit()
+            .lineLimit(1)
+            Spacer(minLength: 0)
+            Text("Less").foregroundStyle(NotchDesign.tertiary)
+            ForEach(0...UsageHeatmap.levels, id: \.self) { level in
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(Self.color(level: level))
+                    .frame(width: 9, height: 9)
+            }
+            Text("More").foregroundStyle(NotchDesign.tertiary)
+        }
+        .font(.system(size: 10, weight: .medium))
+        .frame(height: 12)
     }
 }
 

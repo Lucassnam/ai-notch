@@ -14,8 +14,39 @@ enum AIFormat {
         }
     }
 
-    /// `compact` is for places where the glyphs have to fit a fixed slot — the
-    /// two values beside the notch, and chart axis labels.
+    /// Token counts for the square beside the notch: two significant figures,
+    /// never more than four glyphs (`22M`, `850K`, `1.2B`). Thresholds are on
+    /// the rounded result, so 9,960 is `10K`, not `10.0K`.
+    static func squareTokens(_ value: Int64) -> String {
+        let magnitude = Double(abs(value))
+        let units: [(Double, String)] = [(1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")]
+        for (scale, suffix) in units where magnitude >= scale * 0.9995 {
+            return shortFigure(Double(value) / scale) + suffix
+        }
+        return "\(value)"
+    }
+
+    /// Spend for the square beside the notch, which holds about four glyphs at
+    /// 13pt: `$4.2`, `$24`, `$132`, `$1.2K`. The cents go first; the card and
+    /// the accessibility label keep the full figure.
+    static func squareCurrency(_ value: Double) -> String {
+        let magnitude = abs(value)
+        if magnitude == 0 { return "$0" }
+        if magnitude < 0.05 { return "<$0.1" }
+        if magnitude >= 999_500 { return "$" + shortFigure(value / 1_000_000) + "M" }
+        if magnitude >= 999.5 { return "$" + shortFigure(value / 1_000) + "K" }
+        return "$" + shortFigure(value)
+    }
+
+    /// One decimal under 10, whole numbers from there, decided on the rounded
+    /// value so 9.96 becomes `10` rather than `10.0`.
+    private static func shortFigure(_ value: Double) -> String {
+        abs(value) < 9.95 ? String(format: "%.1f", value) : String(format: "%.0f", value)
+    }
+
+    /// `compact` is for places where the glyphs have to fit a fixed slot, such
+    /// as chart axis labels. The square beside the notch is narrower still and
+    /// uses `squareCurrency`.
     ///
     /// It caps the result at six characters so a 44pt slot never has to shrink
     /// the text below the 11pt floor the type scale sets: cents up to $99.99,
@@ -66,7 +97,7 @@ enum AIFormat {
 
     static func reset(_ date: Date?, now: Date = Date()) -> String {
         guard let date else { return "Reset unavailable" }
-        if date <= now { return "Reset due" }
+        if date <= now { return "Reset, unused since" }
         let interval = date.timeIntervalSince(now)
         let hours = Int(interval / 3_600)
         let minutes = Int(interval.truncatingRemainder(dividingBy: 3_600) / 60)

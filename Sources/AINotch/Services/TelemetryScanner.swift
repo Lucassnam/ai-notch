@@ -69,10 +69,16 @@ actor TelemetryScanner {
 
         for (provider, files) in filesByProvider {
             for file in files {
-                let signature = try signature(for: file)
+                // A transcript can be deleted between listing and reading, or
+                // be unreadable. Either one used to fail the whole scan, so the
+                // notch froze on its last figures. Keep its cached events, if
+                // any, and move on.
+                guard let signature = try? signature(for: file) else { continue }
                 if cache.files[file.path]?.signature == signature { continue }
 
-                let data = try Data(contentsOf: file, options: [.mappedIfSafe])
+                guard let data = try? Data(contentsOf: file, options: [.mappedIfSafe]) else {
+                    continue
+                }
                 let parsed: CachedFile
 
                 switch provider {

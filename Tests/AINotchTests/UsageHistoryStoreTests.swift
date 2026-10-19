@@ -40,6 +40,38 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(restored.recordedCosts[event.id]), 2, accuracy: 0.0001)
     }
 
+    /// An unreadable history file must survive. It used to be replaced by the
+    /// live events on the scan after the failed decode.
+    func testUnreadableHistoryIsMovedAsideNotOverwritten() throws {
+        let fileManager = FileManager.default
+        let directory = fileManager.temporaryDirectory
+            .appendingPathComponent("AINotchHistoryTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fileManager.removeItem(at: directory) }
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let historyURL = directory.appendingPathComponent("usage-history.json")
+        let original = Data(#"{"version":99,"records":{}}"#.utf8)
+        try original.write(to: historyURL)
+
+        var store = UsageHistoryStore(historyURL: historyURL)
+        let event = UsageEvent(
+            id: "live",
+            provider: .claude,
+            timestamp: Date(timeIntervalSince1970: 1_786_000_000),
+            model: "claude-sonnet-5",
+            tokens: TokenBreakdown(input: 10)
+        )
+        let merged = try store.merge(liveEvents: [event])
+        XCTAssertEqual(merged.events, [event])
+
+        let aside = try fileManager.contentsOfDirectory(atPath: directory.path)
+            .filter { $0.hasPrefix("usage-history.unreadable-") }
+        XCTAssertEqual(aside.count, 1)
+        XCTAssertEqual(
+            try Data(contentsOf: directory.appendingPathComponent(aside[0])),
+            original
+        )
+    }
+
     func testScannerReturnsDurableEventsAfterSourceFileIsDeleted() async throws {
         let fileManager = FileManager.default
         let home = fileManager.temporaryDirectory

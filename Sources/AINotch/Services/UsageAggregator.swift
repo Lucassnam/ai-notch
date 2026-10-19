@@ -132,7 +132,22 @@ struct UsageAggregator: Sendable {
     }
 
     private func preferredLimit(_ limits: [RateLimitWindow], now: Date) -> RateLimitWindow? {
-        let fresh = limits.filter { now.timeIntervalSince($0.observedAt) < 14 * 24 * 60 * 60 }
+        // A reading taken before its window reset is stale: had anything been
+        // used since, a newer reading would exist. Showing it kept a card on
+        // "12% left" beside "Reset due" for hours after the allowance refilled.
+        let current = limits.map { limit -> RateLimitWindow in
+            guard let resetsAt = limit.resetsAt, resetsAt <= now else { return limit }
+            return RateLimitWindow(
+                id: limit.id,
+                provider: limit.provider,
+                windowMinutes: limit.windowMinutes,
+                usedPercent: 0,
+                resetsAt: resetsAt,
+                observedAt: limit.observedAt,
+                source: limit.source
+            )
+        }
+        let fresh = current.filter { now.timeIntervalSince($0.observedAt) < 14 * 24 * 60 * 60 }
         guard let latestObservation = fresh.map(\.observedAt).max() else { return nil }
         let currentRecordSet = fresh.filter {
             latestObservation.timeIntervalSince($0.observedAt) < 10 * 60
